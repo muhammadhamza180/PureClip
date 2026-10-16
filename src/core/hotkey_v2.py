@@ -1,10 +1,9 @@
 """
-PureClip Low-Level Windows Keyboard Interceptor
-Intercepts Ctrl+V dynamically when multiple items are copied,
-and allows standard direct paste when only 1 item is copied.
+PureClip Low-Level Windows Keyboard Interceptor v2
+Intercepts Ctrl+V dynamically when multiple items are staged.
+Uses win32_event_filter for sub-ms keystroke suppression.
 """
 
-import time
 import threading
 import win32api
 import win32gui
@@ -22,6 +21,9 @@ VK_LCONTROL = 0xA2
 VK_RCONTROL = 0xA3
 VK_MENU = 0x12       # Alt
 VK_V = 0x56
+
+# LLKHF_INJECTED flag (bit 4) indicates the keystroke was simulated
+LLKHF_INJECTED = 0x00000010
 
 
 class KeyboardInterceptor:
@@ -41,7 +43,6 @@ class KeyboardInterceptor:
         self._suppressing_v_release = False
 
     def start(self):
-        """Starts the low-level Windows keyboard hook."""
         self.listener = keyboard.Listener(
             win32_event_filter=self._event_filter
         )
@@ -55,47 +56,42 @@ class KeyboardInterceptor:
     def _event_filter(self, msg, data):
         """
         Win32 low-level event filter.
-        Returning False consumes/suppresses the keystroke.
-        Returning True lets Windows pass the keystroke through.
+        Returning False suppresses the keystroke.
+        Returning True passes it through to Windows.
         """
-        # Ignore simulated/injected keystrokes so our own paste is never blocked
-        if hasattr(data, 'flags') and (data.flags & 0x00000010):
+        # ALWAYS let injected/simulated keystrokes through (our own Ctrl+V pastes)
+        if hasattr(data, 'flags') and (data.flags & LLKHF_INJECTED):
             return True
 
         vk = data.vkCode
 
-        # Check if Alt + V is pressed (explicit palette trigger)
+        # ─── Alt + V: Always open palette ───
         if (msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN) and vk == VK_V:
-            is_alt_down = (win32api.GetAsyncKeyState(VK_MENU) & 0x8000) != 0
-            if is_alt_down:
-                target_hwnd = win32gui.GetForegroundWindow()
+            is_alt = (win32api.GetAsyncKeyState(VK_MENU) & 0x8000) != 0
+            if is_alt:
+                target = win32gui.GetForegroundWindow()
                 self._suppressing_v_release = True
-                threading.Thread(target=self.on_trigger_modal, args=(target_hwnd,), daemon=True).start()
+                threading.Thread(target=self.on_trigger_modal, args=(target,), daemon=True).start()
                 return False
 
-        # Check if Ctrl + V is pressed
+        # ─── Ctrl + V: Conditionally intercept ───
         if (msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN) and vk == VK_V:
-            is_ctrl_down = (
+            is_ctrl = (
                 (win32api.GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 or
                 (win32api.GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 or
                 (win32api.GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0
             )
-            
-            if is_ctrl_down:
-                # Ask coordinator if we should intercept (i.e. user copied >= 2 items)
-                if self.should_intercept_paste():
-                    target_hwnd = win32gui.GetForegroundWindow()
-                    self._suppressing_v_release = True
-                    # Launch modal on main thread
-                    threading.Thread(target=self.on_trigger_modal, args=(target_hwnd,), daemon=True).start()
-                    # Suppress Ctrl+V from reaching the text field!
-                    return False
 
-        # Suppress the corresponding key-up if we suppressed the key-down
+            if is_ctrl and self.should_intercept_paste():
+                target = win32gui.GetForegroundWindow()
+                self._suppressing_v_release = True
+                threading.Thread(target=self.on_trigger_modal, args=(target,), daemon=True).start()
+                return False
+
+        # Suppress matching key-up
         if (msg == WM_KEYUP or msg == WM_SYSKEYUP) and vk == VK_V:
             if self._suppressing_v_release:
                 self._suppressing_v_release = False
                 return False
 
-        # Allow all other keystrokes to pass normally
         return True

@@ -1,28 +1,28 @@
 """
-PureClip Main Application (PyQt6 Core)
-Apple Liquid UI, Zero-Click Keyboard Dispatch, and Multi-Copy Auto-Detect.
+PureClip Main Application (PyQt6)
+Coordinates clipboard monitoring, keyboard interception, sound feedback,
+image capture, and the Apple Liquid UI modal dispatch.
 """
 
 import sys
 import os
 
-# Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from src.core.buffer import ClipBuffer
+from src.core.buffer import ClipBuffer, ClipItem
 from src.core.pipeline import Pipeline
-from src.core.clipboard import ClipboardController
+from src.core.clipboard import ClipboardController, play_copy_sound
 from src.core.hotkey_v2 import KeyboardInterceptor
 from src.analytics.metrics import MetricsTracker
 from src.ui.liquid_modal import LiquidModal
 
 
 class SignalBridge(QObject):
-    """Bridges background keyboard hook events safely to the Qt GUI thread."""
-    show_palette = pyqtSignal(int)  # passes target_hwnd
+    """Bridges background keyboard events safely to the Qt GUI thread."""
+    show_palette = pyqtSignal(int)
 
 
 class PureClipApp:
@@ -33,17 +33,13 @@ class PureClipApp:
         # Core State
         self.buffer = ClipBuffer(max_size=9)
         self.metrics = MetricsTracker()
-        
-        # Staged items for the current copy session
-        # If user copies >= 2 items, Ctrl+V opens the picker
-        # If user copies 1 item, Ctrl+V pastes directly
-        self.staged_clips = []
-        self._last_copied_raw = ""
+        self._last_text_hash = ""
+        self._last_image_hash = ""
         self._target_hwnd = None
 
-        # Signal Bridge
+        # Signal Bridge (thread → Qt main loop)
         self.bridge = SignalBridge()
-        self.bridge.show_palette.connect(self._on_show_palette_slot)
+        self.bridge.show_palette.connect(self._on_show_palette)
 
         # Apple Liquid Modal
         self.modal = LiquidModal(
@@ -51,105 +47,117 @@ class PureClipApp:
             on_autofill_chosen=self._on_autofill_chosen
         )
 
-        # Connect Native Clipboard Listener
+        # Connect Qt clipboard listener (fires on EVERY Ctrl+C system-wide)
         self.clipboard = self.qt_app.clipboard()
         self.clipboard.dataChanged.connect(self._on_clipboard_changed)
 
-        # Low-Level Keyboard Interceptor
+        # Low-level keyboard interceptor
         self.interceptor = KeyboardInterceptor(
-            should_intercept_paste=self._should_intercept_paste,
-            on_trigger_modal=self._on_trigger_modal_hook
+            should_intercept_paste=self._should_intercept,
+            on_trigger_modal=self._on_trigger_modal
         )
 
     def start(self):
-        """Starts listeners and main Qt event loop."""
-        print("✦ PureClip Apple Liquid UI is active!")
-        print("• Copy 1 item: standard Ctrl+V pastes directly.")
-        print("• Copy 2+ items: Ctrl+V automatically summons the Liquid Palette.")
-        print("• Press 1, 2, or 3 to paste into your active input without touching the mouse.")
-        print("• Press Alt+V anytime to view your full clipboard history.")
+        print("✦ PureClip is running!")
+        print("• Copy anything with Ctrl+C (text, links, images).")
+        print("• Copy 2+ items → Ctrl+V opens the Liquid Palette.")
+        print("• Copy 1 item  → Ctrl+V pastes directly (normal behavior).")
+        print("• Alt+V always opens the palette.")
+        print("• Press [T] to cycle through 10 theme presets.")
+        print("")
 
         self.interceptor.start()
         sys.exit(self.qt_app.exec())
 
-    def _should_intercept_paste(self) -> bool:
-        """Determines if Ctrl+V should be intercepted (user staged 2+ items)."""
-        return len(self.staged_clips) >= 2
+    def _should_intercept(self) -> bool:
+        """Only intercept Ctrl+V when user has copied 2+ items."""
+        return len(self.buffer) >= 2
 
-    def _on_trigger_modal_hook(self, target_hwnd: int):
-        """Called from background keyboard listener thread."""
+    def _on_trigger_modal(self, target_hwnd: int):
+        """Called from background keyboard thread — emits signal to Qt main thread."""
         self._target_hwnd = target_hwnd
         self.bridge.show_palette.emit(target_hwnd)
 
-    def _on_show_palette_slot(self, target_hwnd: int):
-        """Runs on the Qt GUI main thread to render the palette."""
-        # Use staged clips if available, else recent buffer items
-        items = self.staged_clips if len(self.staged_clips) >= 2 else self.buffer.get_all()
+    def _on_show_palette(self, target_hwnd: int):
+        """Runs on Qt GUI thread to display the modal."""
+        items = self.buffer.get_all()
         if not items:
             return
         self.modal.display_palette(items, target_hwnd)
 
     def _on_clipboard_changed(self):
-        """Triggered automatically by Windows whenever ANY text is copied."""
+        """Fired whenever the system clipboard changes (any app, any Ctrl+C)."""
         try:
-            raw_text = self.clipboard.text()
-            if not raw_text or raw_text == self._last_copied_raw:
+            # Check for image first
+            mime = self.clipboard.mimeData()
+
+            if mime and mime.hasImage():
+                image = self.clipboard.image()
+                if not image.isNull():
+                    # Convert QImage to bytes for storage
+                    from PyQt6.QtCore import QBuffer, QIODevice
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    image.save(buf, "PNG")
+                    img_bytes = bytes(buf.data())
+                    buf.close()
+
+                    import hashlib
+                    img_hash = hashlib.md5(img_bytes[:1024]).hexdigest()
+                    if img_hash != self._last_image_hash:
+                        self._last_image_hash = img_hash
+                        item = self.buffer.push_image(img_bytes)
+                        if item:
+                            self.metrics.record_copy(0)
+                            play_copy_sound()
+                            print(f"[PureClip] ✓ Copied #{item.index}: {item.preview}")
+                    return
+
+            # Text
+            text = self.clipboard.text()
+            if not text:
                 return
 
-            self._last_copied_raw = raw_text
-            clean_text, category, trackers = Pipeline.process(raw_text)
-            if not clean_text:
+            import hashlib
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            if text_hash == self._last_text_hash:
                 return
 
-            # Push to permanent ring buffer
-            item = self.buffer.push(raw_text)
-            if not item:
-                item = self.buffer.get_by_index(1)
-
+            self._last_text_hash = text_hash
+            _, _, trackers = Pipeline.process(text)
+            item = self.buffer.push_text(text)
             if item:
-                # Add to current staging session if not duplicate of top item
-                if not self.staged_clips or self.staged_clips[0].content != item.content:
-                    self.staged_clips.insert(0, item)
-                    # Keep staged clips aligned with 1-based indexing
-                    for idx, it in enumerate(self.staged_clips, start=1):
-                        it.index = idx
+                self.metrics.record_copy(trackers_count=trackers)
+                play_copy_sound()
+                print(f"[PureClip] ✓ Copied #{item.index}: {item.preview} ({item.category})")
 
-                    self.metrics.record_copy(trackers_count=trackers)
-                    print(f"[PureClip] Staged #{len(self.staged_clips)}: {item.preview} ({item.category})")
         except Exception as e:
             pass
 
     def _on_item_chosen(self, index: int):
-        """Called when user presses a digit [1-9] on the modal."""
-        # Find item in staged clips or buffer
-        selected_item = None
-        for it in self.staged_clips:
-            if it.index == index:
-                selected_item = it
-                break
+        """User pressed a digit key in the modal — paste the chosen item."""
+        item = self.buffer.get_by_index(index)
+        if not item:
+            return
 
-        if not selected_item:
-            selected_item = self.buffer.get_by_index(index)
+        target = self._target_hwnd
 
-        if selected_item:
-            target = self._target_hwnd
-            # Reset staged items after a successful paste
-            self.staged_clips.clear()
-            self.metrics.record_paste(buffer_size_at_paste=max(1, index))
+        if item.is_image and item.image_data:
+            ClipboardController.paste_image_into_window(item.image_data, target)
+        else:
+            ClipboardController.paste_into_window(item.content, target)
 
-            # Paste directly into the user's active window!
-            ClipboardController.paste_into_window(selected_item.content, target)
-            print(f"[PureClip] Pasted #{index} -> active window.")
+        self.metrics.record_paste(buffer_size_at_paste=len(self.buffer))
+        print(f"[PureClip] ✓ Pasted #{index} into active window.")
 
     def _on_autofill_chosen(self):
-        """Called when user presses Tab to cascade-fill form fields."""
-        items = [it.content for it in self.staged_clips] if self.staged_clips else [it.content for it in self.buffer.get_all()]
+        """User pressed Tab — cascade-paste all text items across form fields."""
+        items = [it.content for it in self.buffer.get_all() if not it.is_image]
         target = self._target_hwnd
-        self.staged_clips.clear()
         if items:
-            self.metrics.record_form_fill(item_count=len(items))
             ClipboardController.auto_fill_form(items, target)
-            print(f"[PureClip] Auto-filled {len(items)} fields with Tab.")
+            self.metrics.record_form_fill(item_count=len(items))
+            print(f"[PureClip] ✓ Auto-filled {len(items)} fields.")
 
 
 if __name__ == "__main__":
