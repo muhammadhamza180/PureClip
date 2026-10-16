@@ -16,6 +16,7 @@ from src.core.hotkey import HotkeyListener
 from src.core.pipeline import Pipeline
 from src.analytics.metrics import MetricsTracker
 from src.ui.palette import LiquidPalette
+from src.ui.tray import SystemTrayApp
 
 
 class PureClipApp:
@@ -33,13 +34,14 @@ class PureClipApp:
 
         # 3. UI Layer (Hidden root window for event loop)
         self.root = ctk.CTk()
-        self.root.withdraw()  # Root is hidden; palette is a Toplevel
+        self.root.withdraw()  # Root is hidden
 
         # 4. Apple Liquid UI Palette
         self.palette = LiquidPalette(
             on_select=self._on_item_selected,
             on_autofill=self._on_autofill_requested,
-            metrics=self.metrics
+            metrics=self.metrics,
+            theme="dark"
         )
 
         # 5. Global Hotkey & Clipboard Monitor
@@ -48,14 +50,23 @@ class PureClipApp:
             on_dispatch_trigger=self._on_dispatch_trigger
         )
 
+        # 6. Windows Taskbar System Tray
+        self.tray = SystemTrayApp(
+            on_open_palette=self._on_dispatch_trigger,
+            on_toggle_theme=self._on_toggle_theme,
+            on_exit=self.stop
+        )
+
     def start(self):
-        """Starts background listener and launches UI event loop."""
-        print("✦ PureClip is active in the background.")
+        """Starts background listener, tray icon, and launches UI event loop."""
+        print("✦ PureClip is running in the Windows background.")
         print("• Copy items naturally with [Ctrl + C].")
         print("• Tap [Alt + V] anytime to summon the Apple Liquid UI Palette.")
-        print("• Press [1-9] to paste, [Tab] to auto-fill forms, [I] for insights, [Esc] to dismiss.")
-        
+        print("• In palette: [1-9] paste, [Tab] form-fill, [T] toggle light/dark theme, [I] insights.")
+
         self.hotkey_listener.start()
+        self.tray.start()
+
         try:
             self.root.mainloop()
         except KeyboardInterrupt:
@@ -63,8 +74,13 @@ class PureClipApp:
 
     def stop(self):
         self.hotkey_listener.stop()
+        if hasattr(self, 'tray') and self.tray.icon:
+            self.tray.icon.stop()
         self.root.destroy()
         sys.exit(0)
+
+    def _on_toggle_theme(self):
+        self.root.after(0, self.palette.toggle_theme)
 
     def _on_copy_detected(self, raw_text: str):
         """Called when a user copies text anywhere in Windows."""
@@ -75,13 +91,12 @@ class PureClipApp:
             print(f"[PureClip] Captured #{item.index}: {item.preview} ({item.category})")
 
     def _on_dispatch_trigger(self):
-        """Called when user presses Alt+V."""
+        """Called when user presses Alt+V or clicks Open in Tray."""
         items = self.buffer.get_all()
         if not items:
             print("[PureClip] Buffer is empty. Copy something first!")
             return
 
-        # Marshal UI execution to main Tkinter thread
         self.root.after(0, lambda: self.palette.show(items))
 
     def _on_item_selected(self, index: int):
@@ -89,10 +104,8 @@ class PureClipApp:
         item = self.buffer.get_by_index(index)
         if item:
             buffer_len = len(self.buffer)
-            # Paste into target window
             ClipboardController.paste_now(item.content)
             self.metrics.record_paste(buffer_size_at_paste=buffer_len)
-            print(f"[PureClip] Dispatched item #{index} -> target application.")
 
     def _on_autofill_requested(self):
         """Called when user hits Tab to cascade-fill form fields."""
@@ -100,7 +113,6 @@ class PureClipApp:
         if items:
             ClipboardController.auto_fill_form(items)
             self.metrics.record_form_fill(item_count=len(items))
-            print(f"[PureClip] Form auto-filled {len(items)} fields sequentially via Tab.")
 
 
 if __name__ == "__main__":

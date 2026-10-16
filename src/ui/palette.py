@@ -1,98 +1,144 @@
 """
 PureClip Apple Liquid UI Palette
-Translucent, sleek floating dispatch window inspired by macOS / iOS design.
+Features translucent glassmorphism styling, Light & Dark Apple themes,
+tactile keycap badges, and smooth keyboard dispatch.
 """
 
-import sys
-import tkinter as tk
-import customtkinter as ctk
 import win32gui
-from typing import Callable, List, Optional
+import customtkinter as ctk
+from typing import Callable, List
 from src.core.buffer import ClipItem
 from src.analytics.metrics import MetricsTracker
-
-# Set appearance mode to modern Dark
-ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("dark-blue")
 
 
 class LiquidPalette(ctk.CTkToplevel):
     """
-    Floating, frameless translucent dispatch palette with tactile keycap badges.
+    Floating, frameless palette inspired by Apple macOS Liquid & Spotlight design.
     """
+
+    # Theme color palettes
+    THEMES = {
+        "dark": {
+            "bg": "#13131A",
+            "card_bg": "#1A1A24",
+            "card_border": "#313145",
+            "row_bg": "#222230",
+            "row_hover": "#2B2B3D",
+            "row_border": "#2E2E3E",
+            "title": "#FFFFFF",
+            "subtitle": "#9494A8",
+            "text": "#F1F1F6",
+            "keycap_bg": "#36364D",
+            "keycap_text": "#C4C4DC",
+            "keycap_border": "#464663",
+            "badge_url": ("#1E3A5F", "#93C5FD"),
+            "badge_email": ("#164E33", "#86EFAC"),
+            "badge_code": ("#4A3718", "#FDE047"),
+            "badge_text": ("#2D2D3D", "#CBD5E1"),
+        },
+        "light": {
+            "bg": "#EAECEF",
+            "card_bg": "#FFFFFF",
+            "card_border": "#D1D5DB",
+            "row_bg": "#F8FAFC",
+            "row_hover": "#EDF2F7",
+            "row_border": "#E2E8F0",
+            "title": "#0F172A",
+            "subtitle": "#64748B",
+            "text": "#1E293B",
+            "keycap_bg": "#E2E8F0",
+            "keycap_text": "#334155",
+            "keycap_border": "#CBD5E1",
+            "badge_url": ("#DBEAFE", "#1E40AF"),
+            "badge_email": ("#DCFCE7", "#166534"),
+            "badge_code": ("#FEF3C7", "#92400E"),
+            "badge_text": ("#F1F5F9", "#475569"),
+        }
+    }
 
     def __init__(
         self,
         on_select: Callable[[int], None],
         on_autofill: Callable[[], None],
-        metrics: MetricsTracker
+        metrics: MetricsTracker,
+        theme: str = "dark"
     ):
         super().__init__()
 
         self.on_select = on_select
         self.on_autofill = on_autofill
         self.metrics = metrics
+        self.current_theme = theme
 
-        # Window properties: Frameless, always on top
+        # Window properties: Frameless, Topmost, Soft Translucency
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.configure(fg_color="#121217")
+        self.attributes("-alpha", 0.95)  # Apple-like subtle glass translucency
 
-        # Container Frame (Apple-style frosted glass card with 1px border)
-        self.main_card = ctk.CTkFrame(
-            self,
-            corner_radius=16,
-            fg_color="#16161E",
-            border_width=1,
-            border_color="#2A2A38"
-        )
+        # Main Card (Frosted Glass Container with 1px border glow)
+        self.main_card = ctk.CTkFrame(self, corner_radius=18, border_width=1)
         self.main_card.pack(fill="both", expand=True, padx=4, pady=4)
 
-        # Header
+        # Header Frame
         self.header_frame = ctk.CTkFrame(self.main_card, fg_color="transparent")
-        self.header_frame.pack(fill="x", padx=16, pady=(12, 6))
+        self.header_frame.pack(fill="x", padx=18, pady=(14, 8))
 
         self.title_label = ctk.CTkLabel(
             self.header_frame,
             text="✦ PureClip",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            text_color="#F0F0F5"
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
         )
         self.title_label.pack(side="left")
 
         self.hint_label = ctk.CTkLabel(
             self.header_frame,
-            text="Press [1-9] to paste  •  [Tab] Form fill  •  [I] Insights",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color="#8E8E9F"
+            text="[1-9] Paste  •  [Tab] Form Fill  •  [T] Theme  •  [I] Insights",
+            font=ctk.CTkFont(family="Segoe UI", size=11)
         )
         self.hint_label.pack(side="right")
 
-        # Scrollable / List Container for Clips
+        # Container for Clips
         self.clips_container = ctk.CTkFrame(self.main_card, fg_color="transparent")
-        self.clips_container.pack(fill="both", expand=True, padx=12, pady=6)
+        self.clips_container.pack(fill="both", expand=True, padx=14, pady=(2, 10))
 
-        # Insights Panel (initially hidden)
+        # Insights Panel
         self.insights_frame = None
 
-        # Bind Keypresses directly to this window
+        # Key bindings
         self.bind("<Escape>", lambda e: self.hide())
         self.bind("<Tab>", lambda e: self._handle_tab(e))
+        self.bind("<t>", lambda e: self.toggle_theme())
+        self.bind("<T>", lambda e: self.toggle_theme())
         self.bind("<i>", lambda e: self._toggle_insights())
         self.bind("<I>", lambda e: self._toggle_insights())
 
         for digit in range(1, 10):
             self.bind(str(digit), lambda e, d=digit: self._handle_digit(d))
 
-        # Initially hidden offscreen
+        self._apply_theme()
         self.withdraw()
 
+    def toggle_theme(self):
+        """Switches between Apple Light Glass and Apple Dark Glass."""
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        ctk.set_appearance_mode("Light" if self.current_theme == "light" else "Dark")
+        self._apply_theme()
+
+    def _apply_theme(self):
+        t = self.THEMES[self.current_theme]
+        self.configure(fg_color=t["bg"])
+        self.main_card.configure(
+            fg_color=t["card_bg"],
+            border_color=t["card_border"]
+        )
+        self.title_label.configure(text_color=t["title"])
+        self.hint_label.configure(text_color=t["subtitle"])
+
     def show(self, items: List[ClipItem]):
-        """Populates items and animates palette into view at current cursor position."""
+        """Renders items and positions palette at cursor."""
         if not items:
             return
 
-        # Clear previous rows
         for widget in self.clips_container.winfo_children():
             widget.destroy()
 
@@ -100,30 +146,25 @@ class LiquidPalette(ctk.CTkToplevel):
             self.insights_frame.destroy()
             self.insights_frame = None
 
-        # Populate rows (up to 5 items shown for maximum sleekness)
         display_items = items[:5]
         for item in display_items:
             self._render_clip_row(item)
 
-        # Calculate position near cursor
         self.update_idletasks()
-        width = 460
-        height = 70 + (len(display_items) * 44)
-        
-        cursor_x, cursor_y = win32gui.GetCursorPos()
-        
-        # Position slightly offset from cursor
-        x = cursor_x + 15
-        y = cursor_y + 15
+        width = 490
+        height = 76 + (len(display_items) * 48)
 
-        # Check screen bounds
+        cursor_x, cursor_y = win32gui.GetCursorPos()
+        x = cursor_x + 12
+        y = cursor_y + 12
+
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
 
         if x + width > screen_w:
-            x = cursor_x - width - 15
+            x = cursor_x - width - 12
         if y + height > screen_h:
-            y = cursor_y - height - 15
+            y = cursor_y - height - 12
 
         self.geometry(f"{width}x{height}+{max(10, x)}+{max(10, y)}")
         self.deiconify()
@@ -131,97 +172,98 @@ class LiquidPalette(ctk.CTkToplevel):
         self.focus_force()
 
     def _render_clip_row(self, item: ClipItem):
-        """Renders an individual clip with a tactile keycap and badge."""
+        t = self.THEMES[self.current_theme]
+
         row = ctk.CTkFrame(
             self.clips_container,
-            fg_color="#1E1E28",
-            corner_radius=10,
+            fg_color=t["row_bg"],
+            corner_radius=12,
             border_width=1,
-            border_color="#2A2A38"
+            border_color=t["row_border"]
         )
-        row.pack(fill="x", pady=3)
+        row.pack(fill="x", pady=4)
 
         # Tactile Keycap Badge [ 1 ]
         keycap = ctk.CTkLabel(
             row,
             text=f" {item.index} ",
             font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
-            fg_color="#2D2D3D",
-            text_color="#A5A5C0",
+            fg_color=t["keycap_bg"],
+            text_color=t["keycap_text"],
             corner_radius=6,
             width=28,
             height=24
         )
-        keycap.pack(side="left", padx=(8, 8), pady=8)
+        keycap.pack(side="left", padx=(10, 8), pady=9)
 
-        # Content Preview
+        # Content Text
         content_lbl = ctk.CTkLabel(
             row,
             text=item.preview,
             font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color="#E4E4EE",
+            text_color=t["text"],
             anchor="w"
         )
         content_lbl.pack(side="left", fill="x", expand=True, padx=4)
 
-        # Category Pill (e.g. "URL", "Email", "Text")
-        pill_color = "#3B3B4F"
-        if item.category == "URL":
-            pill_color = "#1E3A5F"
-        elif item.category == "Email":
-            pill_color = "#1F4E38"
-        elif item.category == "Code":
-            pill_color = "#4D381E"
+        # Category Pill Badge
+        badge_key = f"badge_{item.category.lower()}"
+        bg_color, fg_color = t.get(badge_key, t["badge_text"])
 
-        cat_badge = ctk.CTkLabel(
+        badge = ctk.CTkLabel(
             row,
             text=f" {item.category} ",
             font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
-            fg_color=pill_color,
-            text_color="#D0D0E5",
+            fg_color=bg_color,
+            text_color=fg_color,
             corner_radius=8,
             height=20
         )
-        cat_badge.pack(side="right", padx=(4, 10))
+        badge.pack(side="right", padx=(4, 12))
 
-        # Make entire row clickable
+        # Click support
         row.bind("<Button-1>", lambda e, idx=item.index: self._handle_digit(idx))
         content_lbl.bind("<Button-1>", lambda e, idx=item.index: self._handle_digit(idx))
 
     def _toggle_insights(self):
-        """Shows the Wispr Flow style productivity metrics."""
         summary = self.metrics.get_summary()
+        t = self.THEMES[self.current_theme]
 
         for widget in self.clips_container.winfo_children():
             widget.destroy()
 
-        self.insights_frame = ctk.CTkFrame(self.clips_container, fg_color="#1A1A24", corner_radius=10)
+        self.insights_frame = ctk.CTkFrame(
+            self.clips_container,
+            fg_color=t["row_bg"],
+            corner_radius=12,
+            border_width=1,
+            border_color=t["row_border"]
+        )
         self.insights_frame.pack(fill="both", expand=True, pady=4)
 
-        # Stat 1: Time saved
         title = ctk.CTkLabel(
             self.insights_frame,
             text="⚡ Wispr Flow ROI Insights",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color="#F5F5FA"
+            text_color=t["title"]
         )
-        title.pack(pady=(8, 4))
+        title.pack(pady=(10, 6))
 
         stats_text = (
-            f"• Time Saved: {summary['minutes_saved']} minutes\n"
-            f"• App Switches Avoided: {summary['switches_avoided']}\n"
-            f"• Tracking Links Cleaned: {summary['trackers_stripped']}\n"
-            f"• Form Auto-Fills: {summary['form_autofills']}"
+            f"• Estimated Time Saved: {summary['minutes_saved']} minutes\n"
+            f"• App Context Switches Avoided: {summary['switches_avoided']}\n"
+            f"• Tracking Links Stripped: {summary['trackers_stripped']}\n"
+            f"• Form Auto-Fills Executed: {summary['form_autofills']}"
         )
-        
+
         lbl = ctk.CTkLabel(
             self.insights_frame,
             text=stats_text,
             font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color="#C0C0D4",
+            text_color=t["text"],
             justify="left"
         )
-        lbl.pack(padx=16, pady=(4, 12))
+        lbl.pack(padx=20, pady=(4, 14))
 
     def _handle_digit(self, digit: int):
         self.hide()
