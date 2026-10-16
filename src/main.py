@@ -1,7 +1,10 @@
 """
 PureClip Main Application (PyQt6)
-Coordinates clipboard monitoring, keyboard interception, sound feedback,
-image capture, and the Apple Liquid UI modal dispatch.
+- Global keyboard interception: 1-9 paste instantly without clicking modal
+- Wispr Flow style animated toast confirmation on copy
+- Smart copy support (middle-click to copy without highlighting)
+- Text and image clipboard support
+- 12 Designer Modal Themes
 """
 
 import sys
@@ -16,13 +19,17 @@ from src.core.buffer import ClipBuffer, ClipItem
 from src.core.pipeline import Pipeline
 from src.core.clipboard import ClipboardController, play_copy_sound
 from src.core.hotkey_v2 import KeyboardInterceptor
+from src.core.smart_copy import SmartCopyMonitor
 from src.analytics.metrics import MetricsTracker
 from src.ui.liquid_modal import LiquidModal
+from src.ui.toast import CopyNotificationToast
 
 
 class SignalBridge(QObject):
-    """Bridges background keyboard events safely to the Qt GUI thread."""
+    """Bridges background thread events safely to the Qt GUI main thread."""
     show_palette = pyqtSignal(int)
+    modal_key_action = pyqtSignal(str, int)
+    show_copy_toast = pyqtSignal(str, int)
 
 
 class PureClipApp:
@@ -37,9 +44,11 @@ class PureClipApp:
         self._last_image_hash = ""
         self._target_hwnd = None
 
-        # Signal Bridge (thread → Qt main loop)
+        # Signal Bridge
         self.bridge = SignalBridge()
         self.bridge.show_palette.connect(self._on_show_palette)
+        self.bridge.modal_key_action.connect(self._on_modal_key_action)
+        self.bridge.show_copy_toast.connect(self._on_show_copy_toast)
 
         # Apple Liquid Modal
         self.modal = LiquidModal(
@@ -47,54 +56,89 @@ class PureClipApp:
             on_autofill_chosen=self._on_autofill_chosen
         )
 
-        # Connect Qt clipboard listener (fires on EVERY Ctrl+C system-wide)
+        # Wispr Flow style toast notification
+        self.toast = CopyNotificationToast()
+
+        # Connect Qt clipboard listener
         self.clipboard = self.qt_app.clipboard()
         self.clipboard.dataChanged.connect(self._on_clipboard_changed)
 
         # Low-level keyboard interceptor
         self.interceptor = KeyboardInterceptor(
             should_intercept_paste=self._should_intercept,
-            on_trigger_modal=self._on_trigger_modal
+            is_modal_active=self._is_modal_active,
+            on_trigger_modal=self._on_trigger_modal,
+            on_modal_key=self._on_modal_key_thread
         )
 
+        # Smart copy monitor (middle-click to copy)
+        self.smart_copy = SmartCopyMonitor(on_copy_action=lambda: None)
+
     def start(self):
-        print("✦ PureClip is running!")
+        print("✦ PureClip Apple Liquid UI is active!")
         print("• Copy anything with Ctrl+C (text, links, images).")
-        print("• Copy 2+ items → Ctrl+V opens the Liquid Palette.")
-        print("• Copy 1 item  → Ctrl+V pastes directly (normal behavior).")
-        print("• Alt+V always opens the palette.")
-        print("• Press [T] to cycle through 10 theme presets.")
+        print("• Wispr Flow style toast confirms every copy!")
+        print("• Middle-click any link/text for Smart Copy.")
+        print("• Copy 2+ items → Ctrl+V opens Liquid Palette.")
+        print("• Press 1-9 to paste INSTANTLY (ZERO CLICKING NEEDED!).")
+        print("• Press [T] to cycle 12 themes.")
         print("")
 
         self.interceptor.start()
+        self.smart_copy.start()
         sys.exit(self.qt_app.exec())
 
+    def _is_modal_active(self) -> bool:
+        """Returns True if modal is currently shown and active."""
+        return self.modal.isVisible()
+
     def _should_intercept(self) -> bool:
-        """Only intercept Ctrl+V when user has copied 2+ items."""
+        """Only intercept Ctrl+V when user has staged 2+ items."""
         return len(self.buffer) >= 2
 
     def _on_trigger_modal(self, target_hwnd: int):
-        """Called from background keyboard thread — emits signal to Qt main thread."""
         self._target_hwnd = target_hwnd
         self.bridge.show_palette.emit(target_hwnd)
 
+    def _on_modal_key_thread(self, action: str, val: int):
+        """Called from global keyboard hook when modal is open."""
+        self.bridge.modal_key_action.emit(action, val)
+
+    def _on_modal_key_action(self, action: str, val: int):
+        """Executes modal actions directly on GUI thread from global keypresses."""
+        if not self.modal.isVisible():
+            return
+
+        if action == "digit":
+            self.modal.dismiss_and_paste(val)
+        elif action == "tab":
+            self.modal.dismiss_and_autofill()
+        elif action == "esc":
+            self.modal.hide()
+            if self._target_hwnd:
+                from src.core.clipboard import force_foreground
+                force_foreground(self._target_hwnd)
+        elif action == "theme":
+            self.modal.cycle_theme()
+
     def _on_show_palette(self, target_hwnd: int):
-        """Runs on Qt GUI thread to display the modal."""
         items = self.buffer.get_all()
         if not items:
             return
         self.modal.display_palette(items, target_hwnd)
 
+    def _on_show_copy_toast(self, text: str, count: int):
+        self.toast.show_toast(text, count)
+
     def _on_clipboard_changed(self):
-        """Fired whenever the system clipboard changes (any app, any Ctrl+C)."""
+        """Fired whenever clipboard updates system-wide."""
         try:
-            # Check for image first
             mime = self.clipboard.mimeData()
 
+            # Image
             if mime and mime.hasImage():
                 image = self.clipboard.image()
                 if not image.isNull():
-                    # Convert QImage to bytes for storage
                     from PyQt6.QtCore import QBuffer, QIODevice
                     buf = QBuffer()
                     buf.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -110,6 +154,7 @@ class PureClipApp:
                         if item:
                             self.metrics.record_copy(0)
                             play_copy_sound()
+                            self.bridge.show_copy_toast.emit("[Image]", len(self.buffer))
                             print(f"[PureClip] ✓ Copied #{item.index}: {item.preview}")
                     return
 
@@ -129,13 +174,13 @@ class PureClipApp:
             if item:
                 self.metrics.record_copy(trackers_count=trackers)
                 play_copy_sound()
+                self.bridge.show_copy_toast.emit(item.preview, len(self.buffer))
                 print(f"[PureClip] ✓ Copied #{item.index}: {item.preview} ({item.category})")
 
         except Exception as e:
             pass
 
     def _on_item_chosen(self, index: int):
-        """User pressed a digit key in the modal — paste the chosen item."""
         item = self.buffer.get_by_index(index)
         if not item:
             return
@@ -151,7 +196,6 @@ class PureClipApp:
         print(f"[PureClip] ✓ Pasted #{index} into active window.")
 
     def _on_autofill_chosen(self):
-        """User pressed Tab — cascade-paste all text items across form fields."""
         items = [it.content for it in self.buffer.get_all() if not it.is_image]
         target = self._target_hwnd
         if items:
