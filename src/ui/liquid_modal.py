@@ -1,7 +1,8 @@
 """
 PureClip Apple Liquid UI Modal (PyQt6)
 Ultra-sleek, hardware-accelerated frosted glass palette with Apple aesthetics,
-ambient drop shadow, tactile mechanical keycaps, and zero-click keyboard focus.
+ambient drop shadow, tactile mechanical keycaps, zero-click keyboard focus,
+and smooth draggable positioning.
 """
 
 import sys
@@ -9,8 +10,8 @@ import time
 import ctypes
 import win32gui
 from typing import Callable, List, Optional
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QColor, QFont, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QGraphicsDropShadowEffect, QFrame, QApplication
@@ -34,8 +35,9 @@ class LiquidModal(QWidget):
         self.on_autofill_chosen = on_autofill_chosen
         self.target_hwnd = None
         self.items: List[ClipItem] = []
+        self._drag_pos = None
 
-        # Frameless, translucent, stays on top, tool window (no taskbar item)
+        # Frameless, translucent, stays on top, tool window (no taskbar clutter)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -46,7 +48,7 @@ class LiquidModal(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        # Outer layout with padding for the drop shadow
+        # Outer layout with padding for ambient drop shadow
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(16, 16, 16, 16)
 
@@ -55,17 +57,17 @@ class LiquidModal(QWidget):
         self.card.setObjectName("GlassCard")
         self.card.setStyleSheet("""
             #GlassCard {
-                background: rgba(18, 18, 26, 0.90);
+                background: rgba(18, 18, 26, 0.94);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 20px;
             }
         """)
 
-        # Ambient Glow / Drop Shadow
+        # Ambient Glow / Soft Shadow
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(42)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        shadow.setOffset(0, 10)
+        shadow.setBlurRadius(46)
+        shadow.setColor(QColor(0, 0, 0, 190))
+        shadow.setOffset(0, 12)
         self.card.setGraphicsEffect(shadow)
 
         # Card Inner Layout
@@ -73,9 +75,9 @@ class LiquidModal(QWidget):
         self.card_layout.setContentsMargins(20, 18, 20, 18)
         self.card_layout.setSpacing(10)
 
-        # Header
+        # Header Frame
         header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(2, 0, 2, 4)
+        header_layout.setContentsMargins(2, 0, 2, 6)
 
         self.logo_label = QLabel("✦ PureClip")
         self.logo_label.setStyleSheet("""
@@ -111,27 +113,32 @@ class LiquidModal(QWidget):
         self.items = items[:5]
         self.target_hwnd = target_hwnd
 
-        # Clear existing rows
+        # Cleanly clear old rows
         while self.rows_container.count():
-            child = self.rows_container.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+            item_widget = self.rows_container.takeAt(0)
+            if item_widget.widget():
+                item_widget.widget().setParent(None)
+                item_widget.widget().deleteLater()
 
-        # Render clip rows
+        # Render each clip row and ensure it is set visible
         for item in self.items:
             self._add_row(item)
 
-        # Adjust size and position
-        self.adjustSize()
-        cursor_pos = win32gui.GetCursorPos()
-        x = cursor_pos[0] + 12
-        y = cursor_pos[1] + 12
+        # Calculate exact dimensions so card never collapses
+        fixed_width = 500
+        calculated_height = 80 + (len(self.items) * 56) + 32  # 32 for shadow padding
+        self.setFixedSize(fixed_width, calculated_height)
+
+        # Position right near current mouse cursor using reliable QCursor
+        cursor_pos = QCursor.pos()
+        x = cursor_pos.x() + 15
+        y = cursor_pos.y() + 15
 
         screen = QApplication.primaryScreen().geometry()
-        if x + self.width() > screen.width():
-            x = cursor_pos[0] - self.width() - 12
-        if y + self.height() > screen.height():
-            y = cursor_pos[1] - self.height() - 12
+        if x + fixed_width > screen.width():
+            x = cursor_pos.x() - fixed_width - 15
+        if y + calculated_height > screen.height():
+            y = cursor_pos.y() - calculated_height - 15
 
         self.move(max(10, x), max(10, y))
         self.show()
@@ -139,7 +146,7 @@ class LiquidModal(QWidget):
         self.activateWindow()
         self.setFocus()
 
-        # Safely force Windows OS to focus this window immediately without mouse click
+        # Bring window to foreground in Windows OS without mouse click
         hwnd = int(self.winId())
         safe_set_foreground(hwnd)
 
@@ -149,77 +156,91 @@ class LiquidModal(QWidget):
         row.setCursor(Qt.CursorShape.PointingHandCursor)
         row.setStyleSheet("""
             QFrame {
-                background: rgba(30, 32, 46, 0.75);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                background: rgba(30, 32, 46, 0.78);
+                border: 1px solid rgba(255, 255, 255, 0.09);
                 border-radius: 12px;
             }
             QFrame:hover {
-                background: rgba(45, 48, 70, 0.90);
-                border: 1px solid rgba(129, 140, 248, 0.40);
+                background: rgba(45, 48, 72, 0.95);
+                border: 1px solid rgba(129, 140, 248, 0.45);
             }
         """)
 
         row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(10, 8, 12, 8)
+        row_layout.setContentsMargins(12, 10, 14, 10)
         row_layout.setSpacing(12)
 
-        # Tactile Keycap
+        # Tactile 3D Keycap Badge [ 1 ]
         keycap = QLabel(str(item.index))
-        keycap.setFixedSize(26, 26)
+        keycap.setFixedSize(28, 28)
         keycap.setAlignment(Qt.AlignmentFlag.AlignCenter)
         keycap.setStyleSheet("""
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3E4259, stop:1 #272A3C);
-            border: 1px solid rgba(255, 255, 255, 0.22);
-            border-bottom: 2px solid rgba(0, 0, 0, 0.5);
-            border-radius: 6px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #424660, stop:1 #272A3C);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-bottom: 2px solid rgba(0, 0, 0, 0.6);
+            border-radius: 7px;
             color: #FFFFFF;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 700;
             font-family: 'Consolas', monospace;
         """)
         row_layout.addWidget(keycap)
 
-        # Text Preview
-        preview_text = item.preview
-        text_label = QLabel(preview_text)
+        # Clean Preview Text
+        text_label = QLabel(item.preview)
         text_label.setStyleSheet("""
             color: #F8FAFC;
             font-size: 13px;
+            font-weight: 500;
             font-family: 'Segoe UI', -apple-system, sans-serif;
             border: none;
             background: transparent;
         """)
         row_layout.addWidget(text_label, 1)
 
-        # Category Badge
+        # Category Pill Badge
         cat_style = self._get_badge_style(item.category)
         badge = QLabel(f" {item.category} ")
         badge.setStyleSheet(cat_style)
         badge.setFixedHeight(22)
         row_layout.addWidget(badge)
 
-        # Enable mouse clicking on row as an alternative
+        # Click interaction support
         row.mousePressEvent = lambda e, idx=item.index: self.dismiss_and_paste(idx)
         text_label.mousePressEvent = lambda e, idx=item.index: self.dismiss_and_paste(idx)
 
         self.rows_container.addWidget(row)
+        # Explicitly make sure row is visible
+        row.show()
 
     def _get_badge_style(self, category: str) -> str:
         styles = {
-            "URL": "background: rgba(30, 58, 95, 0.9); color: #93C5FD; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 6px;",
-            "Email": "background: rgba(22, 78, 51, 0.9); color: #86EFAC; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 6px;",
-            "Code": "background: rgba(74, 55, 24, 0.9); color: #FDE047; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 6px;",
-            "Text": "background: rgba(45, 45, 60, 0.8); color: #CBD5E1; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 6px;",
-            "Multiline": "background: rgba(60, 45, 75, 0.8); color: #E9D5FF; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 6px;"
+            "URL": "background: rgba(30, 58, 95, 0.9); color: #93C5FD; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 7px;",
+            "Email": "background: rgba(22, 78, 51, 0.9); color: #86EFAC; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 7px;",
+            "Code": "background: rgba(74, 55, 24, 0.9); color: #FDE047; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 7px;",
+            "Text": "background: rgba(45, 45, 60, 0.85); color: #CBD5E1; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 7px;",
+            "Multiline": "background: rgba(60, 45, 75, 0.85); color: #E9D5FF; border-radius: 6px; font-size: 10px; font-weight: 600; padding: 2px 7px;"
         }
         return styles.get(category, styles["Text"])
+
+    def mousePressEvent(self, event):
+        """Allows dragging the modal anywhere on the screen."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        """Performs smooth window dragging."""
+        if event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
 
     def keyPressEvent(self, event):
         """Intercepts keyboard events immediately when palette is shown."""
         txt = event.text()
         key = event.key()
 
-        # Handle numeric keys [1-9] (both character and key code)
+        # Handle numeric keys [1-9]
         if txt in "123456789" and txt:
             self.dismiss_and_paste(int(txt))
             return
