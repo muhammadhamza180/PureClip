@@ -7,14 +7,27 @@ import time
 import ctypes
 import win32clipboard
 import win32con
-import win32gui
 from typing import Optional, List
 
 # Virtual-Key codes
 VK_CONTROL = 0x11
+VK_MENU = 0x12       # Alt
 VK_V = 0x56
 VK_TAB = 0x09
 KEYEVENTF_KEYUP = 0x0002
+
+
+def safe_set_foreground(hwnd: int):
+    """Safely brings a window to the foreground without raising Win32 exceptions."""
+    if not hwnd:
+        return
+    try:
+        ctypes.windll.user32.keybd_event(VK_MENU, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        ctypes.windll.user32.BringWindowToTop(hwnd)
+    except Exception:
+        pass
 
 
 class ClipboardController:
@@ -62,10 +75,7 @@ class ClipboardController:
         cls.set_text(text)
 
         if target_hwnd:
-            try:
-                win32gui.SetForegroundWindow(target_hwnd)
-            except Exception:
-                pass
+            safe_set_foreground(target_hwnd)
 
         # Give Windows 50ms to transfer keyboard focus
         time.sleep(0.05)
@@ -73,7 +83,7 @@ class ClipboardController:
         # Simulate Ctrl + V
         ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK_V, 0, 0, 0)
-        time.sleep(0.01)
+        time.sleep(0.02)
         ctypes.windll.user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
         ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
@@ -84,10 +94,7 @@ class ClipboardController:
         Paste item[0] -> Tab -> Paste item[1] -> Tab -> ...
         """
         if target_hwnd:
-            try:
-                win32gui.SetForegroundWindow(target_hwnd)
-            except Exception:
-                pass
+            safe_set_foreground(target_hwnd)
 
         time.sleep(0.05)
 
@@ -98,7 +105,7 @@ class ClipboardController:
             # Paste Ctrl + V
             ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
             ctypes.windll.user32.keybd_event(VK_V, 0, 0, 0)
-            time.sleep(0.01)
+            time.sleep(0.02)
             ctypes.windll.user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
             ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 

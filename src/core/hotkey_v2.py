@@ -58,6 +58,10 @@ class KeyboardInterceptor:
         Returning False consumes/suppresses the keystroke.
         Returning True lets Windows pass the keystroke through.
         """
+        # Ignore simulated/injected keystrokes so our own paste is never blocked
+        if hasattr(data, 'flags') and (data.flags & 0x00000010):
+            return True
+
         vk = data.vkCode
 
         # Check if Alt + V is pressed (explicit palette trigger)

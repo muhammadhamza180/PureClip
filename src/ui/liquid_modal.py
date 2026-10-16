@@ -6,6 +6,7 @@ ambient drop shadow, tactile mechanical keycaps, and zero-click keyboard focus.
 
 import sys
 import time
+import ctypes
 import win32gui
 from typing import Callable, List, Optional
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect, QFrame, QApplication
 )
 from src.core.buffer import ClipItem
+from src.core.clipboard import safe_set_foreground
 
 
 class LiquidModal(QWidget):
@@ -53,8 +55,8 @@ class LiquidModal(QWidget):
         self.card.setObjectName("GlassCard")
         self.card.setStyleSheet("""
             #GlassCard {
-                background: rgba(18, 18, 26, 0.88);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(18, 18, 26, 0.90);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 20px;
             }
         """)
@@ -135,14 +137,16 @@ class LiquidModal(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+        self.setFocus()
 
-        # Force Windows OS to focus this window immediately without mouse click
+        # Safely force Windows OS to focus this window immediately without mouse click
         hwnd = int(self.winId())
-        win32gui.SetForegroundWindow(hwnd)
+        safe_set_foreground(hwnd)
 
     def _add_row(self, item: ClipItem):
         row = QFrame()
         row.setObjectName(f"Row_{item.index}")
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
         row.setStyleSheet("""
             QFrame {
                 background: rgba(30, 32, 46, 0.75);
@@ -194,6 +198,10 @@ class LiquidModal(QWidget):
         badge.setFixedHeight(22)
         row_layout.addWidget(badge)
 
+        # Enable mouse clicking on row as an alternative
+        row.mousePressEvent = lambda e, idx=item.index: self.dismiss_and_paste(idx)
+        text_label.mousePressEvent = lambda e, idx=item.index: self.dismiss_and_paste(idx)
+
         self.rows_container.addWidget(row)
 
     def _get_badge_style(self, category: str) -> str:
@@ -208,9 +216,14 @@ class LiquidModal(QWidget):
 
     def keyPressEvent(self, event):
         """Intercepts keyboard events immediately when palette is shown."""
+        txt = event.text()
         key = event.key()
 
-        # Handle numeric keys [1-9]
+        # Handle numeric keys [1-9] (both character and key code)
+        if txt in "123456789" and txt:
+            self.dismiss_and_paste(int(txt))
+            return
+
         if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
             digit = key - Qt.Key.Key_0
             self.dismiss_and_paste(digit)
@@ -224,9 +237,8 @@ class LiquidModal(QWidget):
         # Handle Escape (Cancel)
         if key == Qt.Key.Key_Escape:
             self.hide()
-            # Return focus to target
             if self.target_hwnd:
-                win32gui.SetForegroundWindow(self.target_hwnd)
+                safe_set_foreground(self.target_hwnd)
             return
 
         super().keyPressEvent(event)
@@ -235,13 +247,9 @@ class LiquidModal(QWidget):
         """Hides the modal, restores focus to target app, and sends paste."""
         self.hide()
         target = self.target_hwnd
-        # Restore focus to target window before pasting
         if target:
-            try:
-                win32gui.SetForegroundWindow(target)
-            except Exception:
-                pass
-        # Execute callback after brief OS focus transition
+            safe_set_foreground(target)
+        time.sleep(0.04)
         self.on_item_chosen(index)
 
     def dismiss_and_autofill(self):
@@ -249,8 +257,6 @@ class LiquidModal(QWidget):
         self.hide()
         target = self.target_hwnd
         if target:
-            try:
-                win32gui.SetForegroundWindow(target)
-            except Exception:
-                pass
+            safe_set_foreground(target)
+        time.sleep(0.04)
         self.on_autofill_chosen()

@@ -103,15 +103,19 @@ class PureClipApp:
 
             # Push to permanent ring buffer
             item = self.buffer.push(raw_text)
-            if item:
-                # Add to current staging session
-                self.staged_clips.insert(0, item)
-                # Keep staged clips aligned with 1-based indexing
-                for idx, it in enumerate(self.staged_clips, start=1):
-                    it.index = idx
+            if not item:
+                item = self.buffer.get_by_index(1)
 
-                self.metrics.record_copy(trackers_count=trackers)
-                print(f"[PureClip] Staged #{len(self.staged_clips)}: {item.preview} ({item.category})")
+            if item:
+                # Add to current staging session if not duplicate of top item
+                if not self.staged_clips or self.staged_clips[0].content != item.content:
+                    self.staged_clips.insert(0, item)
+                    # Keep staged clips aligned with 1-based indexing
+                    for idx, it in enumerate(self.staged_clips, start=1):
+                        it.index = idx
+
+                    self.metrics.record_copy(trackers_count=trackers)
+                    print(f"[PureClip] Staged #{len(self.staged_clips)}: {item.preview} ({item.category})")
         except Exception as e:
             pass
 
